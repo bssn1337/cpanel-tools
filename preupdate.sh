@@ -56,7 +56,7 @@ log "PkgMgr  : $PKG_MGR"
 # ═══════════════════════════════════════════════════════════════
 section "STEP 1/6 — Cek Proses upcp"
 SELF=$$
-RUNNING=$(pgrep -af "upcp|updatenow" 2>/dev/null | grep -v "$$\|preupdate\|--check" | grep -v "^$" || true)
+RUNNING=$(pgrep -af "upcp|updatenow" 2>/dev/null | grep -E "scripts/(upcp|updatenow)" | grep -v "$$\|preupdate\|--check" | grep -v "^$" || true)
 if [ -n "$RUNNING" ]; then
     warn "upcp sedang berjalan:"
     echo "$RUNNING" | while IFS= read -r line; do warn "  $line"; done
