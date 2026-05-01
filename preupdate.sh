@@ -26,7 +26,7 @@ ERRORS=0; FIXES=0
 cat << 'EOF'
 
   ╔═══════════════════════════════════════════════════╗
-  ║      cPanel/WHM Pre-Update Fix  v1.5              ║
+  ║      cPanel/WHM Pre-Update Fix  v1.6              ║
   ║      Universal — EL7/EL8/EL9                      ║
   ║      Rawon Hunter™ — Gatlab Security Research     ║
   ╚═══════════════════════════════════════════════════╝
@@ -221,34 +221,42 @@ else
     REQUIRED_PKGS="boost-program-options libxml2 openssl glibc"
 fi
 
-# Install satu per satu — skip yang tidak tersedia tanpa error
-PKG_INSTALLED=0
-PKG_SKIPPED=0
+# Cek mana yang belum terinstall
+MISSING=""
 for pkg in $REQUIRED_PKGS; do
-    if rpm -q "$pkg" &>/dev/null; then
-        continue  # sudah ada
-    fi
-    if $PKG_MGR --enablerepo=epel install -y "$pkg" &>/dev/null 2>&1; then
-        ok "Installed: $pkg"
-        PKG_INSTALLED=$((PKG_INSTALLED+1))
-        FIXES=$((FIXES+1))
-    else
-        # Cek apakah paket memang tidak ada di repo (bukan error lain)
-        if ! $PKG_MGR --enablerepo=epel info "$pkg" &>/dev/null 2>&1; then
-            PKG_SKIPPED=$((PKG_SKIPPED+1))  # tidak tersedia di OS ini, skip diam-diam
+    rpm -q "$pkg" &>/dev/null || MISSING="$MISSING $pkg"
+done
+
+if [ -z "$MISSING" ]; then
+    ok "Semua dependency sudah lengkap"
+else
+    # Filter: ambil hanya paket yang BENAR-BENAR tersedia di repo
+    # Satu kali query ke yum/dnf — jauh lebih cepat dari per-paket
+    printf "  Cek ketersediaan paket di repo..."
+    AVAILABLE=$($PKG_MGR --enablerepo=epel list available $MISSING 2>/dev/null \
+        | awk 'NR>1 && /\.(x86_64|noarch|i686)/{print $1}' \
+        | sed 's/\..*//' | tr '\n' ' ')
+    printf " selesai\n"
+
+    if [ -n "$AVAILABLE" ]; then
+        printf "  Install: %s\n" "$AVAILABLE"
+        if $PKG_MGR --enablerepo=epel install -y $AVAILABLE > /tmp/preupdate-pkg.log 2>&1; then
+            fixed "Berhasil install: $AVAILABLE"
+            FIXES=$((FIXES+1))
         else
-            warn "Gagal install: $pkg"
+            warn "Sebagian gagal — cek /tmp/preupdate-pkg.log"
             ERRORS=$((ERRORS+1))
         fi
     fi
-done
 
-if [ "$PKG_INSTALLED" -gt 0 ]; then
-    fixed "$PKG_INSTALLED paket berhasil diinstall"
-elif [ "$PKG_SKIPPED" -gt 0 ]; then
-    ok "Semua dependency tersedia (${PKG_SKIPPED} tidak perlu di EL${OS_MAJOR})"
-else
-    ok "Semua dependency sudah lengkap"
+    # Paket yang tidak ada di repo → skip diam-diam (normal untuk cross-OS)
+    STILL=""
+    for pkg in $MISSING; do rpm -q "$pkg" &>/dev/null || STILL="$STILL $pkg"; done
+    if [ -n "$STILL" ]; then
+        ok "Skip (tidak tersedia di EL${OS_MAJOR}, normal):$STILL"
+    else
+        ok "Semua dependency terpenuhi"
+    fi
 fi
 
 # ═════════════════════════════════════════════════════════════
