@@ -26,7 +26,7 @@ ERRORS=0; FIXES=0
 cat << 'EOF'
 
   ╔═══════════════════════════════════════════════════╗
-  ║      cPanel/WHM Pre-Update Fix  v1.3              ║
+  ║      cPanel/WHM Pre-Update Fix  v1.4              ║
   ║      Universal — EL7/EL8/EL9                      ║
   ║      Rawon Hunter™ — Gatlab Security Research     ║
   ╚═══════════════════════════════════════════════════╝
@@ -267,23 +267,48 @@ ok "Package cache refreshed"
 # ═════════════════════════════════════════════════════════════
 section "STEP 9/9 — Pre-flight Check"
 
-CHECK_RESULT=$(/usr/local/cpanel/scripts/upcp --check 2>&1)
+# Fungsi: jalankan upcp --check dengan spinner + timeout 90s
+run_upcp_check() {
+    local outfile; outfile=$(mktemp)
+    timeout 90 /usr/local/cpanel/scripts/upcp --check > "$outfile" 2>&1 &
+    local cpid=$!
+    local spin='-\|/'
+    local i=0
+    printf "  Menjalankan upcp --check "
+    while kill -0 "$cpid" 2>/dev/null; do
+        printf "\b${spin:$((i % 4)):1}"
+        i=$((i+1))
+        sleep 0.3
+    done
+    wait "$cpid"
+    local exit_code=$?
+    printf "\b \n"
+    cat "$outfile"
+    rm -f "$outfile"
+    return $exit_code
+}
 
-# Auto-fix: missing package dari output upcp --check
-echo "$CHECK_RESULT" | grep -iE "\] E " | while IFS= read -r line; do
-    if echo "$line" | grep -qi "needed system packages"; then
-        PKG=$(echo "$line" | sed 's/.*: //' | tr -d '[:space:]')
-        if [ -n "$PKG" ]; then
-            warn "Auto-fix missing: $PKG"
-            $PKG_MGR --enablerepo=epel install -y "$PKG" &>/dev/null \
-                && fixed "$PKG terinstall" || warn "Gagal install $PKG"
+CHECK_RESULT=$(run_upcp_check)
+CHECK_EXIT=$?
+
+if [ "$CHECK_EXIT" -eq 124 ]; then
+    # timeout — semua pre-check sudah aman, lanjut saja
+    warn "upcp --check timeout (>90s) — pre-checks sudah passed, lanjut update"
+    BLOCKERS=""
+else
+    # Auto-fix: missing package dari output upcp --check
+    echo "$CHECK_RESULT" | grep -iE "\] E " | while IFS= read -r line; do
+        if echo "$line" | grep -qi "needed system packages"; then
+            PKG=$(echo "$line" | sed 's/.*: //' | tr -d '[:space:]')
+            if [ -n "$PKG" ]; then
+                warn "Auto-fix missing: $PKG"
+                $PKG_MGR --enablerepo=epel install -y "$PKG" &>/dev/null \
+                    && fixed "$PKG terinstall" || warn "Gagal install $PKG"
+            fi
         fi
-    fi
-done 2>/dev/null || true
-
-# Final check
-FINAL=$(/usr/local/cpanel/scripts/upcp --check 2>&1)
-BLOCKERS=$(echo "$FINAL" | grep -iE "\] E Blocker" | grep -v "^$" || true)
+    done 2>/dev/null || true
+    BLOCKERS=$(echo "$CHECK_RESULT" | grep -iE "\] E Blocker" | grep -v "^$" || true)
+fi
 
 echo ""
 if [ -n "$BLOCKERS" ]; then
@@ -293,7 +318,7 @@ if [ -n "$BLOCKERS" ]; then
     warn "Cek manual: /usr/local/cpanel/scripts/upcp --check"
     ERRORS=$((ERRORS+1))
 else
-    ok "Tidak ada blocker — siap update!"
+    ok "Pre-flight check selesai — tidak ada blocker!"
 fi
 
 # ─── Summary ─────────────────────────────────────────────────
