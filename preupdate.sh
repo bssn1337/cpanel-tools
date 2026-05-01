@@ -1,7 +1,8 @@
 #!/bin/bash
 # =============================================================
-#  cPanel/WHM Pre-Update Fix — Fully Automatic
-#  Auto-detect & fix semua blocker sebelum upcp
+#  cPanel/WHM Pre-Update Fix — Universal Edition
+#  Supports: EL7 / EL8 / EL9 (CentOS, CloudLinux, AlmaLinux, Rocky)
+#  cPanel version: 110.x / 114.x / 116.x / 118.x / 120.x+ / 130.x+
 #
 #  Usage:
 #    curl -sL https://raw.githubusercontent.com/bssn1337/cpanel-tools/master/preupdate.sh | bash
@@ -12,103 +13,103 @@
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; NC='\033[0m'; BOLD='\033[1m'
 
-log()    { echo -e "${CYAN}[$(date '+%H:%M:%S')]${NC} $*"; }
-ok()     { echo -e "  ${GREEN}✓${NC} $*"; }
-warn()   { echo -e "  ${YELLOW}⚠${NC} $*"; }
-err()    { echo -e "  ${RED}✗${NC} $*"; }
-fixed()  { echo -e "  ${GREEN}⚡ FIXED:${NC} $*"; }
-section(){ echo -e "\n${BOLD}${CYAN}── $* ──${NC}"; }
+log()     { echo -e "${CYAN}[$(date '+%H:%M:%S')]${NC} $*"; }
+ok()      { echo -e "  ${GREEN}✓${NC} $*"; }
+warn()    { echo -e "  ${YELLOW}⚠${NC} $*"; }
+err()     { echo -e "  ${RED}✗${NC} $*"; }
+fixed()   { echo -e "  ${GREEN}⚡ FIXED:${NC} $*"; }
+section() { echo -e "\n${BOLD}${CYAN}── $* ──${NC}"; }
 
-ERRORS=0
-FIXES=0
+ERRORS=0; FIXES=0
 
-banner() {
+# ── Banner ────────────────────────────────────────────────────
 cat << 'EOF'
 
   ╔═══════════════════════════════════════════════════╗
-  ║      cPanel/WHM Pre-Update Fix  v1.2              ║
+  ║      cPanel/WHM Pre-Update Fix  v1.3              ║
+  ║      Universal — EL7/EL8/EL9                      ║
   ║      Rawon Hunter™ — Gatlab Security Research     ║
   ╚═══════════════════════════════════════════════════╝
 
 EOF
-}
 
-banner
+# ── Sanity checks ─────────────────────────────────────────────
+[ "$EUID" -ne 0 ]                    && { err "Harus root"; exit 1; }
+[ ! -f /usr/local/cpanel/cpanel ]    && { err "cPanel tidak ditemukan"; exit 1; }
 
-# ── Pastikan root ─────────────────────────────────────────────
-if [ "$EUID" -ne 0 ]; then
-    err "Harus dijalankan sebagai root"; exit 1
-fi
-
-# ── Pastikan ini server cPanel ────────────────────────────────
-if [ ! -f /usr/local/cpanel/cpanel ]; then
-    err "cPanel tidak ditemukan di server ini"; exit 1
-fi
-
+# ═════════════════════════════════════════════════════════════
+# DETEKSI ENVIRONMENT
+# ═════════════════════════════════════════════════════════════
 OS_NAME=$(cat /etc/redhat-release 2>/dev/null || echo "Unknown")
-CPANEL_VER=$(/usr/local/cpanel/cpanel -V 2>/dev/null || echo "unknown")
+OS_MAJOR=$(rpm -q --qf '%{version}' \
+    $(rpm -qf /etc/redhat-release 2>/dev/null) 2>/dev/null \
+    | grep -oE '^[0-9]+' || echo "7")
+CPANEL_VER=$(/usr/local/cpanel/cpanel -V 2>/dev/null | grep -oE '^[0-9]+\.[0-9]+' || echo "0")
+CPANEL_FULL=$(/usr/local/cpanel/cpanel -V 2>/dev/null || echo "unknown")
 SERVER_IP=$(curl -s4 --max-time 5 ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
 
+# Package manager: EL8/EL9 pakai dnf, EL7 pakai yum
+PKG_MGR="yum"
+[ "$OS_MAJOR" -ge 8 ] 2>/dev/null && PKG_MGR="dnf"
+
 log "Server  : $(hostname) ($SERVER_IP)"
-log "OS      : $OS_NAME"
-log "cPanel  : $CPANEL_VER"
+log "OS      : $OS_NAME (EL${OS_MAJOR})"
+log "cPanel  : $CPANEL_FULL"
+log "PkgMgr  : $PKG_MGR"
 echo ""
 
 # ═════════════════════════════════════════════════════════════
-# STEP 1 — Cek proses upcp aktif (prioritas pertama)
+# STEP 1 — Cek proses upcp aktif
 # ═════════════════════════════════════════════════════════════
 section "STEP 1/9 — Cek Proses upcp Aktif"
-RUNNING_UPCP=$(pgrep -f "upcp|updatenow" 2>/dev/null | grep -v "^$$\$" | tr '\n' ' ' || true)
+SELF_PID=$$
+RUNNING_UPCP=$(pgrep -f "upcp|updatenow" 2>/dev/null | grep -v "^${SELF_PID}$" | tr '\n' ' ' || true)
 if [ -n "$RUNNING_UPCP" ]; then
-    warn "Ada proses upcp yang sedang berjalan: PID $RUNNING_UPCP"
-    ACTIVE_LOG=$(ls -t /var/cpanel/updatelogs/*.log 2>/dev/null | head -1)
-    warn "Monitor: tail -f $ACTIVE_LOG"
+    warn "Ada proses upcp berjalan: PID $RUNNING_UPCP"
+    ACTIVE_LOG=$(ls -t /var/cpanel/updatelogs/*.log 2>/dev/null | /usr/bin/head -1)
+    if [ -n "$ACTIVE_LOG" ]; then
+        warn "Monitor: tail -f $ACTIVE_LOG"
+        PROGRESS=$(grep -oE '[0-9]+% complete' "$ACTIVE_LOG" 2>/dev/null | /usr/bin/tail -1)
+        [ -n "$PROGRESS" ] && warn "Progress: $PROGRESS"
+    fi
     echo ""
-    warn "Tunggu proses ini selesai, lalu jalankan script ini lagi"
+    warn "Tunggu selesai, lalu jalankan script ini lagi"
     exit 0
 else
-    ok "Tidak ada proses upcp yang berjalan"
+    ok "Tidak ada proses upcp berjalan"
 fi
 
 # ═════════════════════════════════════════════════════════════
-# STEP 2 — Koneksi ke server cPanel
+# STEP 2 — Koneksi ke update server cPanel
 # ═════════════════════════════════════════════════════════════
 section "STEP 2/9 — Koneksi ke cPanel Update Server"
-CPANEL_HOSTS="securedownloads.cpanel.net httpupdate.cpanel.net"
-NET_OK=1
-for host in $CPANEL_HOSTS; do
+NET_FAIL=0
+for host in securedownloads.cpanel.net httpupdate.cpanel.net; do
     if curl -s --max-time 10 --head "https://$host" &>/dev/null; then
-        ok "Koneksi ke $host OK"
+        ok "https://$host → OK"
     else
         warn "Tidak bisa reach $host"
-        NET_OK=0
+        NET_FAIL=$((NET_FAIL+1))
     fi
 done
-if [ "$NET_OK" -eq 0 ]; then
-    warn "Network issue — cek firewall/DNS. Update mungkin gagal."
-    ERRORS=$((ERRORS+1))
-fi
+[ "$NET_FAIL" -gt 0 ] && { warn "Network issue — update mungkin gagal"; ERRORS=$((ERRORS+1)); }
 
 # ═════════════════════════════════════════════════════════════
-# STEP 3 — Disk space & cleanup
+# STEP 3 — Disk space
 # ═════════════════════════════════════════════════════════════
 section "STEP 3/9 — Disk Space"
 for path in / /tmp /usr/local/cpanel /var; do
     avail=$(df -BM "$path" 2>/dev/null | awk 'NR==2{gsub("M","",$4); print $4}')
     [ -z "$avail" ] && continue
     if [ "$avail" -lt 512 ]; then
-        warn "$path hanya ${avail}MB — bersihkan log lama..."
+        warn "$path hanya ${avail}MB — cleanup log lama..."
         find /var/cpanel/updatelogs -name "*.log" -mtime +7 -delete 2>/dev/null
         find /usr/local/cpanel/logs -name "*.log" -mtime +14 -delete 2>/dev/null
-        find /tmp -maxdepth 1 -name "*.tmp" -mtime +1 -delete 2>/dev/null
-        find /tmp -maxdepth 1 -name "cpanel-*" -mtime +1 -delete 2>/dev/null
-        avail_new=$(df -BM "$path" 2>/dev/null | awk 'NR==2{gsub("M","",$4); print $4}')
-        fixed "$path setelah cleanup: ${avail_new}MB"
+        find /tmp -maxdepth 1 \( -name "*.tmp" -o -name "cpanel-*" \) -mtime +1 -delete 2>/dev/null
+        avail2=$(df -BM "$path" 2>/dev/null | awk 'NR==2{gsub("M","",$4); print $4}')
+        fixed "$path setelah cleanup: ${avail2}MB"
         FIXES=$((FIXES+1))
-        if [ "$avail_new" -lt 256 ]; then
-            err "$path masih kurang (${avail_new}MB) — perlu manual cleanup"
-            ERRORS=$((ERRORS+1))
-        fi
+        [ "$avail2" -lt 256 ] && { err "$path masih kritis (${avail2}MB)"; ERRORS=$((ERRORS+1)); }
     else
         ok "$path : ${avail}MB tersedia"
     fi
@@ -120,30 +121,26 @@ done
 section "STEP 4/9 — Konfigurasi cpupdate.conf"
 CPUPDATE_CONF="/etc/cpupdate.conf"
 if [ -f "$CPUPDATE_CONF" ]; then
-    # Cek apakah UPDATES=manual (block auto update)
     if grep -qi "^UPDATES=manual" "$CPUPDATE_CONF"; then
-        warn "UPDATES=manual ditemukan — update diblokir oleh config!"
-        sed -i 's/^UPDATES=manual/UPDATES=daily/i' "$CPUPDATE_CONF"
-        fixed "UPDATES diubah ke daily"
+        warn "UPDATES=manual ditemukan!"
+        sed -i 's/^UPDATES=manual/UPDATES=daily/I' "$CPUPDATE_CONF"
+        fixed "UPDATES → daily"
         FIXES=$((FIXES+1))
     else
-        ok "UPDATES: $(grep -i ^UPDATES "$CPUPDATE_CONF" | head -1)"
+        ok "UPDATES: $(grep -i '^UPDATES' "$CPUPDATE_CONF" | /usr/bin/head -1)"
     fi
-
-    # Cek CPANEL=manual
     if grep -qi "^CPANEL=manual" "$CPUPDATE_CONF"; then
-        warn "CPANEL=manual ditemukan — update cPanel diblokir!"
-        CURRENT_MAJOR=$(/usr/local/cpanel/cpanel -V 2>/dev/null | grep -oE '^[0-9]+\.[0-9]+')
-        sed -i "s/^CPANEL=manual/CPANEL=${CURRENT_MAJOR}/i" "$CPUPDATE_CONF"
-        fixed "CPANEL diubah ke $CURRENT_MAJOR"
+        warn "CPANEL=manual ditemukan — update diblokir!"
+        sed -i "s/^CPANEL=manual/CPANEL=${CPANEL_VER}/I" "$CPUPDATE_CONF"
+        fixed "CPANEL → $CPANEL_VER"
         FIXES=$((FIXES+1))
     else
-        ok "CPANEL tier: $(grep -i ^CPANEL "$CPUPDATE_CONF" | head -1)"
+        ok "CPANEL tier: $(grep -i '^CPANEL' "$CPUPDATE_CONF" | /usr/bin/head -1)"
     fi
 else
     warn "cpupdate.conf tidak ada — membuat default..."
-    cat > "$CPUPDATE_CONF" << 'CONF'
-CPANEL=11.110
+    cat > "$CPUPDATE_CONF" << CONF
+CPANEL=${CPANEL_VER}
 RPMUP=daily
 SARULESUP=daily
 UPDATES=daily
@@ -153,109 +150,103 @@ CONF
 fi
 
 # ═════════════════════════════════════════════════════════════
-# STEP 5 — Touch file & lock yang memblokir update
+# STEP 5 — Touch files & stale locks
 # ═════════════════════════════════════════════════════════════
-section "STEP 5/9 — Touch Files & Lock Files"
-BLOCK_FILES="
-/etc/cpanelupdate
-/etc/nocpanelupdates
-/var/cpanel/dnsonly
-/tmp/updatenow.lock
-"
-for f in $BLOCK_FILES; do
-    f=$(echo "$f" | tr -d '[:space:]')
-    [ -z "$f" ] && continue
-    if [ -f "$f" ]; then
-        warn "Blocking file ditemukan: $f"
-        rm -f "$f"
-        fixed "Dihapus: $f"
-        FIXES=$((FIXES+1))
-    fi
+section "STEP 5/9 — Blocking Files & Locks"
+FOUND_BLOCK=0
+for f in /etc/cpanelupdate /etc/nocpanelupdates /etc/cpanel_disable_update; do
+    [ -f "$f" ] && { rm -f "$f"; fixed "Removed: $f"; FIXES=$((FIXES+1)); FOUND_BLOCK=1; }
 done
+[ "$FOUND_BLOCK" -eq 0 ] && ok "Tidak ada blocking touch file"
 
-# Hapus stale lock jika proses tidak berjalan
 LOCK_FILE="/var/cpanel/updatenow.lock"
 if [ -f "$LOCK_FILE" ]; then
     LOCK_PID=$(cat "$LOCK_FILE" 2>/dev/null | tr -d '[:space:]')
     if [ -n "$LOCK_PID" ] && ! kill -0 "$LOCK_PID" 2>/dev/null; then
         rm -f "$LOCK_FILE"
-        fixed "Stale lock dihapus (PID $LOCK_PID sudah tidak aktif)"
+        fixed "Stale lock dihapus (PID $LOCK_PID tidak aktif)"
         FIXES=$((FIXES+1))
     else
-        warn "Lock file aktif (PID $LOCK_PID masih berjalan)"
+        warn "Lock aktif (PID $LOCK_PID)"
     fi
 else
     ok "Tidak ada lock file"
 fi
 
 # ═════════════════════════════════════════════════════════════
-# STEP 6 — EPEL repo
+# STEP 6 — EPEL (universal per OS version)
 # ═════════════════════════════════════════════════════════════
-section "STEP 6/9 — EPEL Repository"
+section "STEP 6/9 — EPEL Repository (EL${OS_MAJOR})"
+
+EPEL_RPM_URL="https://dl.fedoraproject.org/pub/epel/epel-release-latest-${OS_MAJOR}.noarch.rpm"
+
 if rpm -q epel-release &>/dev/null; then
     ok "EPEL sudah terinstall ($(rpm -q epel-release))"
 else
-    warn "EPEL belum ada — menginstall..."
-    if yum install -y epel-release &>/dev/null; then
-        fixed "EPEL terinstall via yum"
+    warn "EPEL belum ada — menginstall untuk EL${OS_MAJOR}..."
+    if $PKG_MGR install -y epel-release &>/dev/null; then
+        fixed "EPEL terinstall via $PKG_MGR"
         FIXES=$((FIXES+1))
     else
-        rpm -Uvh "https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm" &>/dev/null \
+        warn "Coba via direct RPM..."
+        rpm -Uvh "$EPEL_RPM_URL" &>/dev/null \
             && { fixed "EPEL terinstall via RPM"; FIXES=$((FIXES+1)); } \
-            || { warn "EPEL gagal diinstall — beberapa paket mungkin tidak tersedia"; ERRORS=$((ERRORS+1)); }
+            || { warn "EPEL gagal"; ERRORS=$((ERRORS+1)); }
     fi
 fi
 
 # Pastikan EPEL tidak disabled
-if [ -f /etc/yum.repos.d/epel.repo ]; then
-    if grep -q "enabled=0" /etc/yum.repos.d/epel.repo; then
-        warn "EPEL repo di-disabled — mengaktifkan..."
-        sed -i 's/enabled=0/enabled=1/' /etc/yum.repos.d/epel.repo
-        fixed "EPEL repo diaktifkan"
-        FIXES=$((FIXES+1))
-    fi
+EPEL_REPO="/etc/yum.repos.d/epel.repo"
+[ -f "$EPEL_REPO" ] && grep -q "enabled=0" "$EPEL_REPO" && {
+    sed -i 's/enabled=0/enabled=1/' "$EPEL_REPO"
+    fixed "EPEL repo diaktifkan"
+    FIXES=$((FIXES+1))
+}
+
+# ═════════════════════════════════════════════════════════════
+# STEP 7 — Package dependencies (per OS version)
+# ═════════════════════════════════════════════════════════════
+section "STEP 7/9 — System Package Dependencies (EL${OS_MAJOR})"
+
+# EL7: boost169-* ada di EPEL7
+# EL8+: boost169-* mungkin tidak ada, pakai boost-program-options
+if [ "$OS_MAJOR" -le 7 ]; then
+    REQUIRED_PKGS="boost169-program-options boost169-atomic boost169-chrono boost169-date-time boost169-filesystem boost169-regex boost169-serialization boost169-system boost169-thread liblzf perl-IO-Tty libxml2 openssl"
+elif [ "$OS_MAJOR" -eq 8 ]; then
+    REQUIRED_PKGS="boost-program-options liblzf perl-IO-Tty libxml2 openssl"
+else
+    # EL9+
+    REQUIRED_PKGS="boost-program-options liblzf libxml2 openssl"
 fi
-
-# ═════════════════════════════════════════════════════════════
-# STEP 7 — Paket sistem yang sering jadi blocker
-# ═════════════════════════════════════════════════════════════
-section "STEP 7/9 — System Package Dependencies"
-
-REQUIRED_PKGS="boost169-program-options boost169-atomic boost169-chrono boost169-date-time boost169-filesystem boost169-regex boost169-serialization boost169-system boost169-thread liblzf perl-IO-Tty libxml2 openssl"
 
 MISSING=""
 for pkg in $REQUIRED_PKGS; do
-    if ! rpm -q "$pkg" &>/dev/null; then
-        MISSING="$MISSING $pkg"
-    fi
+    rpm -q "$pkg" &>/dev/null || MISSING="$MISSING $pkg"
 done
 
 if [ -n "$MISSING" ]; then
     warn "Paket kurang:$MISSING"
-    if yum --enablerepo=epel install -y $MISSING > /tmp/preupdate-yum.log 2>&1; then
-        fixed "Semua paket berhasil diinstall"
+    if $PKG_MGR --enablerepo=epel install -y $MISSING > /tmp/preupdate-yum.log 2>&1; then
+        fixed "Paket berhasil diinstall"
         FIXES=$((FIXES+1))
     else
-        warn "Beberapa paket gagal:"
-        grep -iE "no package|error" /tmp/preupdate-yum.log 2>/dev/null | grep -v "^Loading\|^Loaded\|^$" | head -5 | while IFS= read -r line; do
-            warn "  → $line"
-        done
+        grep -iE "no package|no match|error" /tmp/preupdate-yum.log 2>/dev/null \
+            | grep -v "^Loading\|^Loaded\|^$" \
+            | /usr/bin/head -5 \
+            | while IFS= read -r line; do warn "  → $line"; done
     fi
-    # Verifikasi ulang
-    STILL_MISSING=""
-    for pkg in $MISSING; do
-        ! rpm -q "$pkg" &>/dev/null && STILL_MISSING="$STILL_MISSING $pkg"
-    done
-    [ -n "$STILL_MISSING" ] && warn "Masih tidak tersedia (skip):$STILL_MISSING" || ok "Semua dependency terpenuhi"
+    # Verifikasi
+    STILL=""
+    for pkg in $MISSING; do rpm -q "$pkg" &>/dev/null || STILL="$STILL $pkg"; done
+    [ -n "$STILL" ] && warn "Tidak tersedia (skip):$STILL" || ok "Semua dependency terpenuhi"
 else
-    ok "Semua paket dependency sudah lengkap"
+    ok "Semua dependency sudah lengkap"
 fi
 
 # ═════════════════════════════════════════════════════════════
-# STEP 8 — RPM & YUM consistency
+# STEP 8 — RPM database & package manager
 # ═════════════════════════════════════════════════════════════
-section "STEP 8/9 — RPM Database & YUM"
-# Hapus lock jika ada
+section "STEP 8/9 — RPM Database & Package Manager"
 rm -f /var/lib/rpm/__db* 2>/dev/null
 if rpm --rebuilddb &>/dev/null; then
     ok "RPM database rebuilt"
@@ -263,68 +254,65 @@ else
     warn "RPM rebuild gagal"
     ERRORS=$((ERRORS+1))
 fi
-yum-complete-transaction --cleanup-only &>/dev/null || true
-yum clean expire-cache &>/dev/null || true
-ok "YUM cache refreshed"
+
+# EL7: yum-complete-transaction, EL8+: dnf tidak butuh ini
+if [ "$OS_MAJOR" -le 7 ]; then
+    yum-complete-transaction --cleanup-only &>/dev/null || true
+fi
+$PKG_MGR clean expire-cache &>/dev/null || true
+ok "Package cache refreshed"
 
 # ═════════════════════════════════════════════════════════════
 # STEP 9 — Pre-flight check & auto-fix blocker dari upcp
 # ═════════════════════════════════════════════════════════════
-section "STEP 9/9 — Pre-flight Check & Launch Update"
+section "STEP 9/9 — Pre-flight Check"
 
 CHECK_RESULT=$(/usr/local/cpanel/scripts/upcp --check 2>&1)
 
-# Parse setiap baris blocker dan coba auto-fix
+# Auto-fix: missing package dari output upcp --check
 echo "$CHECK_RESULT" | grep -iE "\] E " | while IFS= read -r line; do
-
-    # Blocker: missing package
     if echo "$line" | grep -qi "needed system packages"; then
-        PKG=$(echo "$line" | grep -oE "packages.*: (.+)$" | sed 's/.*: //')
+        PKG=$(echo "$line" | sed 's/.*: //' | tr -d '[:space:]')
         if [ -n "$PKG" ]; then
-            warn "Auto-fix: install missing package '$PKG'..."
-            yum --enablerepo=epel install -y "$PKG" &>/dev/null \
-                && fixed "Package '$PKG' terinstall" \
-                || warn "Gagal install '$PKG'"
+            warn "Auto-fix missing: $PKG"
+            $PKG_MGR --enablerepo=epel install -y "$PKG" &>/dev/null \
+                && fixed "$PKG terinstall" || warn "Gagal install $PKG"
         fi
     fi
-
-    # Blocker: MySQL version
-    if echo "$line" | grep -qi "mysql\|mariadb"; then
-        warn "MySQL/MariaDB blocker: $line"
-        warn "Cek: whmapi1 get_available_mysql_upgrades"
-    fi
-
 done 2>/dev/null || true
 
-# Re-check setelah auto-fix
-CHECK_RESULT2=$(/usr/local/cpanel/scripts/upcp --check 2>&1)
-REMAINING=$(echo "$CHECK_RESULT2" | grep -iE "\] E Blocker" | grep -v "^$" || true)
+# Final check
+FINAL=$(/usr/local/cpanel/scripts/upcp --check 2>&1)
+BLOCKERS=$(echo "$FINAL" | grep -iE "\] E Blocker" | grep -v "^$" || true)
 
 echo ""
-if [ -n "$REMAINING" ]; then
-    err "Masih ada blocker yang tidak bisa di-fix otomatis:"
-    echo "$REMAINING" | while IFS= read -r line; do err "  → $line"; done
+if [ -n "$BLOCKERS" ]; then
+    err "Masih ada blocker:"
+    echo "$BLOCKERS" | while IFS= read -r line; do err "  → $line"; done
     echo ""
-    warn "Jalankan manual: /usr/local/cpanel/scripts/upcp --check"
+    warn "Cek manual: /usr/local/cpanel/scripts/upcp --check"
     ERRORS=$((ERRORS+1))
 else
-    ok "Pre-flight check clear — tidak ada blocker!"
+    ok "Tidak ada blocker — siap update!"
 fi
 
 # ─── Summary ─────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}${CYAN}  ════════════ SUMMARY ════════════${NC}"
-echo -e "  Auto-fixes  : ${GREEN}${BOLD}$FIXES item diperbaiki${NC}"
-echo -e "  Errors left : $([ "$ERRORS" -eq 0 ] && echo "${GREEN}${BOLD}0${NC}" || echo "${RED}${BOLD}$ERRORS${NC}")"
+echo -e "  OS          : EL${OS_MAJOR} — $OS_NAME"
+echo -e "  cPanel      : $CPANEL_FULL"
+echo -e "  Auto-fixes  : ${GREEN}${BOLD}$FIXES item${NC}"
+echo -e "  Issues left : $([ "$ERRORS" -eq 0 ] \
+    && echo "${GREEN}${BOLD}0 — semua bersih${NC}" \
+    || echo "${RED}${BOLD}$ERRORS — perlu perhatian${NC}")"
 echo ""
 
 if [ "$ERRORS" -gt 0 ]; then
-    warn "Ada issue yang perlu fix manual. Update tidak dijalankan."
-    echo ""
+    warn "Ada issue yang perlu ditangani. Update tidak dijalankan."
     exit 1
 fi
 
-# ─── Jalankan update ─────────────────────────────────────────
+# ─── Launch update ────────────────────────────────────────────
 echo -e "${BOLD}${GREEN}  ✓ Semua check passed — Mulai update cPanel...${NC}"
 echo ""
 LOG_FILE="/var/cpanel/updatelogs/preupdate-$(date +%Y%m%d-%H%M%S).log"
@@ -335,5 +323,5 @@ echo -e "  PID      : ${BOLD}$UPCP_PID${NC}"
 echo -e "  Log      : ${BOLD}$LOG_FILE${NC}"
 echo ""
 echo -e "  Monitor  : ${CYAN}tail -f $LOG_FILE${NC}"
-echo -e "  Progress : ${CYAN}grep -E 'complete|ERROR' $LOG_FILE | tail -5${NC}"
+echo -e "  Progress : ${CYAN}grep -oE '[0-9]+% complete' $LOG_FILE | tail -3${NC}"
 echo ""
