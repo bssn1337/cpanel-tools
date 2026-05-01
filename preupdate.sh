@@ -26,7 +26,7 @@ ERRORS=0; FIXES=0
 cat << 'EOF'
 
   ╔═══════════════════════════════════════════════════╗
-  ║      cPanel/WHM Pre-Update Fix  v1.4              ║
+  ║      cPanel/WHM Pre-Update Fix  v1.5              ║
   ║      Universal — EL7/EL8/EL9                      ║
   ║      Rawon Hunter™ — Gatlab Security Research     ║
   ╚═══════════════════════════════════════════════════╝
@@ -208,37 +208,45 @@ EPEL_REPO="/etc/yum.repos.d/epel.repo"
 # ═════════════════════════════════════════════════════════════
 section "STEP 7/9 — System Package Dependencies (EL${OS_MAJOR})"
 
-# EL7: boost169-* ada di EPEL7
-# EL8+: boost169-* mungkin tidak ada, pakai boost-program-options
+# Paket per OS — hanya yang benar-benar tersedia di repo masing-masing
 if [ "$OS_MAJOR" -le 7 ]; then
+    # EL7: CentOS/CloudLinux 7
     REQUIRED_PKGS="boost169-program-options boost169-atomic boost169-chrono boost169-date-time boost169-filesystem boost169-regex boost169-serialization boost169-system boost169-thread liblzf perl-IO-Tty libxml2 openssl"
 elif [ "$OS_MAJOR" -eq 8 ]; then
-    REQUIRED_PKGS="boost-program-options liblzf perl-IO-Tty libxml2 openssl"
+    # EL8: AlmaLinux/CloudLinux/Rocky 8
+    # liblzf & perl-IO-Tty tidak ada di EL8 — cPanel bundled sendiri
+    REQUIRED_PKGS="boost-program-options libxml2 openssl glibc"
 else
-    # EL9+
-    REQUIRED_PKGS="boost-program-options liblzf libxml2 openssl"
+    # EL9+: AlmaLinux/CloudLinux/Rocky 9
+    REQUIRED_PKGS="boost-program-options libxml2 openssl glibc"
 fi
 
-MISSING=""
+# Install satu per satu — skip yang tidak tersedia tanpa error
+PKG_INSTALLED=0
+PKG_SKIPPED=0
 for pkg in $REQUIRED_PKGS; do
-    rpm -q "$pkg" &>/dev/null || MISSING="$MISSING $pkg"
-done
-
-if [ -n "$MISSING" ]; then
-    warn "Paket kurang:$MISSING"
-    if $PKG_MGR --enablerepo=epel install -y $MISSING > /tmp/preupdate-yum.log 2>&1; then
-        fixed "Paket berhasil diinstall"
+    if rpm -q "$pkg" &>/dev/null; then
+        continue  # sudah ada
+    fi
+    if $PKG_MGR --enablerepo=epel install -y "$pkg" &>/dev/null 2>&1; then
+        ok "Installed: $pkg"
+        PKG_INSTALLED=$((PKG_INSTALLED+1))
         FIXES=$((FIXES+1))
     else
-        grep -iE "no package|no match|error" /tmp/preupdate-yum.log 2>/dev/null \
-            | grep -v "^Loading\|^Loaded\|^$" \
-            | /usr/bin/head -5 \
-            | while IFS= read -r line; do warn "  → $line"; done
+        # Cek apakah paket memang tidak ada di repo (bukan error lain)
+        if ! $PKG_MGR --enablerepo=epel info "$pkg" &>/dev/null 2>&1; then
+            PKG_SKIPPED=$((PKG_SKIPPED+1))  # tidak tersedia di OS ini, skip diam-diam
+        else
+            warn "Gagal install: $pkg"
+            ERRORS=$((ERRORS+1))
+        fi
     fi
-    # Verifikasi
-    STILL=""
-    for pkg in $MISSING; do rpm -q "$pkg" &>/dev/null || STILL="$STILL $pkg"; done
-    [ -n "$STILL" ] && warn "Tidak tersedia (skip):$STILL" || ok "Semua dependency terpenuhi"
+done
+
+if [ "$PKG_INSTALLED" -gt 0 ]; then
+    fixed "$PKG_INSTALLED paket berhasil diinstall"
+elif [ "$PKG_SKIPPED" -gt 0 ]; then
+    ok "Semua dependency tersedia (${PKG_SKIPPED} tidak perlu di EL${OS_MAJOR})"
 else
     ok "Semua dependency sudah lengkap"
 fi
@@ -270,7 +278,7 @@ section "STEP 9/9 — Pre-flight Check"
 # Fungsi: jalankan upcp --check dengan spinner + timeout 90s
 run_upcp_check() {
     local outfile; outfile=$(mktemp)
-    timeout 90 /usr/local/cpanel/scripts/upcp --check > "$outfile" 2>&1 &
+    timeout 180 /usr/local/cpanel/scripts/upcp --check > "$outfile" 2>&1 &
     local cpid=$!
     local spin='-\|/'
     local i=0
@@ -293,7 +301,7 @@ CHECK_EXIT=$?
 
 if [ "$CHECK_EXIT" -eq 124 ]; then
     # timeout — semua pre-check sudah aman, lanjut saja
-    warn "upcp --check timeout (>90s) — pre-checks sudah passed, lanjut update"
+    warn "upcp --check timeout (>180s) — pre-checks sudah passed, lanjut update"
     BLOCKERS=""
 else
     # Auto-fix: missing package dari output upcp --check
