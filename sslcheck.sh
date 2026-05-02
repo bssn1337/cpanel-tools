@@ -43,26 +43,32 @@ CNT_TOTAL=0; CNT_ACTIVE=0; CNT_SUSPENDED=0
 CNT_VALID=0; CNT_EXPIRED=0; CNT_NOSSL=0
 
 # ── Collect data ──────────────────────────────────────────────
+# Gunakan /etc/userdomains untuk deteksi SEMUA domain (main + addon + subdomain)
 VALID_LIST=""; EXPIRED_LIST=""; NOSSL_LIST=""; SUSPENDED_LIST=""
+SEEN_USERS=""
 
-for user_file in "$USERS_DIR"/*; do
-    [ -f "$user_file" ] || continue
-    user=$(basename "$user_file")
-    # Skip system/reseller meta files
-    [[ "$user" == *.* ]] && continue
+[ ! -f /etc/userdomains ] && { echo -e "  ${RED}✗${NC} /etc/userdomains tidak ditemukan"; exit 1; }
 
-    domain=$(grep "^DNS=" "$user_file" 2>/dev/null | head -1 | cut -d= -f2)
-    [ -z "$domain" ] && continue
+while IFS=': ' read -r domain user _; do
+    [ -z "$domain" ] || [ -z "$user" ] && continue
+    # Skip nobody dan entry kosong
+    [ "$user" = "nobody" ] && continue
+    [[ "$domain" == \#* ]] && continue
 
-    CNT_TOTAL=$((CNT_TOTAL+1))
-
-    # Cek suspended
+    # Cek suspended — skip domain tapi hitung user-nya sekali
     if [ -f "$SUSPEND_DIR/$user" ]; then
-        CNT_SUSPENDED=$((CNT_SUSPENDED+1))
-        SUSPENDED_LIST="$SUSPENDED_LIST\n  ${DIM}  $domain${NC}"
+        # Hitung suspended user sekali saja
+        if ! echo "$SEEN_USERS" | grep -qx "SUSP_$user"; then
+            CNT_SUSPENDED=$((CNT_SUSPENDED+1))
+            SEEN_USERS="$SEEN_USERS SUSP_$user"
+            # Ambil domain utama untuk ditampilkan
+            MAIN_DOM=$(grep "^DNS=" "$USERS_DIR/$user" 2>/dev/null | head -1 | cut -d= -f2)
+            SUSPENDED_LIST="$SUSPENDED_LIST\n  ${DIM}  ${MAIN_DOM:-$user}${NC}"
+        fi
         continue
     fi
 
+    CNT_TOTAL=$((CNT_TOTAL+1))
     CNT_ACTIVE=$((CNT_ACTIVE+1))
 
     # Cek SSL cert
@@ -108,13 +114,13 @@ for user_file in "$USERS_DIR"/*; do
         DAYS_AGO=$(( -DAYS ))
         EXPIRED_LIST="$EXPIRED_LIST\n  ${RED}✗${NC} $(printf '%-45s' "$domain")  expired ${RED}${DAYS_AGO}${NC} hari lalu|$DAYS_AGO"
     fi
-done
+done < /etc/userdomains
 
 # ── Sort & Print ───────────────────────────────────────────────
 echo -e "${BOLD}${CYAN}  ════════ SUMMARY ════════${NC}"
-echo -e "  Total akun    : ${BOLD}$CNT_TOTAL${NC}"
+echo -e "  Total domain  : ${BOLD}$CNT_TOTAL${NC}"
 echo -e "  Aktif         : ${GREEN}${BOLD}$CNT_ACTIVE${NC}"
-echo -e "  Suspended     : ${YELLOW}${BOLD}$CNT_SUSPENDED${NC}"
+echo -e "  Akun suspend  : ${YELLOW}${BOLD}$CNT_SUSPENDED${NC}"
 echo -e "  SSL Valid     : ${GREEN}${BOLD}$CNT_VALID${NC}"
 echo -e "  SSL Expired   : ${RED}${BOLD}$CNT_EXPIRED${NC}"
 echo -e "  Tanpa SSL     : ${YELLOW}${BOLD}$CNT_NOSSL${NC}"
