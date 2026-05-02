@@ -61,34 +61,50 @@ fi
 FIXES=0
 ERRORS=0
 
-# ── STEP 1: iptables String Matching (utama, tanpa perlu ModSec) ──
-echo -e "${BOLD}${CYAN}── [1/4] iptables CRLF String Blocking (port 2087/2086) ──${NC}"
+# ── STEP 1: iptables String Matching ──────────────────────────
+echo -e "${BOLD}${CYAN}── [1/4] iptables — Block CRLF + Base64 Payload (port 2087/2086) ──${NC}"
 
 if command -v iptables >/dev/null 2>&1; then
-    # Hapus rule lama biar tidak duplikat
-    for PORT in 2087 2086; do
-        iptables -D INPUT -p tcp --dport $PORT -m string --string "%0a" --algo bm -j DROP 2>/dev/null
-        iptables -D INPUT -p tcp --dport $PORT -m string --string "%0d" --algo bm -j DROP 2>/dev/null
-        iptables -D INPUT -p tcp --dport $PORT -m string --string "%0A" --algo bm -j DROP 2>/dev/null
-        iptables -D INPUT -p tcp --dport $PORT -m string --string "%0D" --algo bm -j DROP 2>/dev/null
-        iptables -D INPUT -p tcp --dport $PORT -m string --string "%0a%0d" --algo bm -j DROP 2>/dev/null
+
+    # Daftar string yang di-block:
+    # - %0a / %0d   = URL-encoded CRLF (variasi exploit lain)
+    # - c3VjY2Vzc2Z1bF9pbnRlcm5hbF9hdXRo = base64("successful_internal_auth")
+    # - aGFzcm9vdD0x = base64("hasroot=1")
+    # - dGZhX3ZlcmlmaWVkPTE  = base64("tfa_verified=1")
+    # - aGFzcm9vdD0 = base64 partial "hasroot=" (cover variasi padding)
+    BLOCK_STRINGS=(
+        "%0a"
+        "%0d"
+        "%0A"
+        "%0D"
+        "c3VjY2Vzc2Z1bF9pbnRlcm5hbF9hdXRo"
+        "aGFzcm9vdD0x"
+        "aGFzcm9vdD0"
+        "dGZhX3ZlcmlmaWVkPTE"
+        "hasroot=1"
+        "tfa_verified=1"
+        "successful_internal_auth"
+    )
+
+    # Hapus rule lama dulu biar tidak duplikat
+    for STR in "${BLOCK_STRINGS[@]}"; do
+        for PORT in 2087 2086; do
+            iptables -D INPUT -p tcp --dport $PORT -m string --string "$STR" --algo bm -j DROP 2>/dev/null
+        done
     done
 
     # Tambah rules baru
     OK=0
-    for PORT in 2087 2086; do
-        iptables -I INPUT -p tcp --dport $PORT -m string --string "%0a" --algo bm -j DROP 2>/dev/null && OK=$((OK+1))
-        iptables -I INPUT -p tcp --dport $PORT -m string --string "%0d" --algo bm -j DROP 2>/dev/null
-        iptables -I INPUT -p tcp --dport $PORT -m string --string "%0A" --algo bm -j DROP 2>/dev/null
-        iptables -I INPUT -p tcp --dport $PORT -m string --string "%0D" --algo bm -j DROP 2>/dev/null
+    for STR in "${BLOCK_STRINGS[@]}"; do
+        for PORT in 2087 2086; do
+            iptables -I INPUT -p tcp --dport $PORT -m string --string "$STR" --algo bm -j DROP 2>/dev/null && OK=$((OK+1))
+        done
     done
 
     if [ "$OK" -gt 0 ]; then
-        service iptables save >/dev/null 2>&1 || \
-            iptables-save > /etc/sysconfig/iptables 2>/dev/null || \
-            iptables-save > /etc/iptables/rules.v4 2>/dev/null
-        echo -e "  ${GREEN}✓${NC} iptables block %0a/%0d di port 2087/2086 — aktif"
-        echo -e "  ${CYAN}  ℹ${NC}  Bekerja di kernel level, tidak butuh ModSecurity"
+        echo -e "  ${GREEN}✓${NC} Block URL-encoded CRLF (%0a/%0d)"
+        echo -e "  ${GREEN}✓${NC} Block base64 payload: successful_internal_auth, hasroot=1, tfa_verified=1"
+        echo -e "  ${CYAN}  ℹ${NC}  Kernel level — tidak butuh ModSecurity, cover port 2087 langsung"
         FIXES=$((FIXES+1))
     else
         echo -e "  ${YELLOW}⚠${NC}  iptables string module tidak tersedia di kernel ini"
@@ -107,6 +123,7 @@ if command -v iptables >/dev/null 2>&1; then
             -m recent --set 2>/dev/null
     done
     echo -e "  ${GREEN}✓${NC} Rate limit: maks 30 koneksi/menit per IP ke WHM"
+
     service iptables save >/dev/null 2>&1 || \
         iptables-save > /etc/sysconfig/iptables 2>/dev/null || \
         iptables-save > /etc/iptables/rules.v4 2>/dev/null
