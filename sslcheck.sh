@@ -35,7 +35,14 @@ echo ""
 TMP_JSON=$(mktemp)
 whmapi1 --output=json listaccts > "$TMP_JSON" 2>/dev/null
 
-python3 - "$TMP_JSON" << 'PYEOF'
+# Deteksi python3 — native atau bundled cPanel
+PY3=""
+for p in python3 /usr/local/cpanel/3rdparty/bin/python3 python2 python; do
+    "$p" --version &>/dev/null && PY3="$p" && break
+done
+[ -z "$PY3" ] && { echo -e "  ${RED}✗${NC} Python tidak ditemukan"; rm -f "$TMP_JSON"; exit 1; }
+
+$PY3 - "$TMP_JSON" << 'PYEOF'
 import json, sys, os, datetime, subprocess
 
 data_file = sys.argv[1]
