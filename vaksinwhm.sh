@@ -206,7 +206,8 @@ EXPLOITED=0
 # Cek log akses cpsrvd
 for f in /usr/local/cpanel/logs/access_log /var/log/messages /usr/local/cpanel/logs/error_log; do
     [ -f "$f" ] || continue
-    COUNT=$(grep -c "successful_internal_auth\|hasroot=1\|tfa_verified=1" "$f" 2>/dev/null || echo 0)
+    COUNT=$(grep -c "successful_internal_auth\|hasroot=1\|tfa_verified=1" "$f" 2>/dev/null)
+    COUNT=${COUNT:-0}
     [ "$COUNT" -gt 0 ] && EXPLOITED=1 && \
         echo -e "  ${RED}✗${NC} Mencurigakan: $COUNT entri di $f"
 done
