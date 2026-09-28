@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-#  WHM Domain & SSL Checker v3.0
+#  WHM Domain & SSL Checker v3.1
 #  DNS + HTTP/HTTPS + SSL Checker
 #  Pure Bash — tanpa Python, tanpa jq
 #
@@ -33,7 +33,7 @@ DIM='\033[2m'
 cat << 'BANNER'
 
   ╔═══════════════════════════════════════════════════╗
-  ║      WHM Domain & SSL Checker  v3.0               ║
+  ║      WHM Domain & SSL Checker  v3.1               ║
   ║      DNS + HTTP/HTTPS + SSL Checker               ║
   ║      Pure Bash — Universal EL7/EL8/EL9            ║
   ║      Rawon Hunter™ — Gatlab Security Research     ║
@@ -96,8 +96,11 @@ SSL_DIR="/var/cpanel/ssl/apache_tls"
 USERS_DIR="/var/cpanel/users"
 SUSPEND_DIR="/var/cpanel/suspended"
 
-DNS_TIMEOUT=3
-HTTP_TIMEOUT=10
+DNS_TIMEOUT=2
+HTTP_TIMEOUT=5
+
+# Tampilkan progress setiap domain agar scanner tidak terlihat hang
+SHOW_PROGRESS=1
 
 # Public DNS resolver
 DNS_PRIMARY="1.1.1.1"
@@ -147,114 +150,86 @@ check_dns() {
 
     local domain="$1"
     local result=""
+    local status=""
 
     # ---------------------------------------------------------
-    # Prefer dig
+    # Prefer dig — public DNS validation
+    #
+    # Strategy:
+    #   1. Query A on primary resolver
+    #   2. Query AAAA on primary only if A is empty
+    #   3. If primary has no answer, try secondary
+    #
+    # This avoids doing four DNS queries for every normal domain.
     # ---------------------------------------------------------
 
     if command -v dig >/dev/null 2>&1; then
 
-        # A record
+        # Primary A
         result=$(
-            dig \
-                @"$DNS_PRIMARY" \
-                "$domain" \
-                A \
-                +short \
-                +time="$DNS_TIMEOUT" \
-                +tries=1 \
-                2>/dev/null
+            dig @"$DNS_PRIMARY" "$domain" A +short \
+                +time="$DNS_TIMEOUT" +tries=1 2>/dev/null
         )
 
         if [ -n "$result" ]; then
             return 0
         fi
 
-
-        # AAAA record
+        # Primary AAAA
         result=$(
-            dig \
-                @"$DNS_PRIMARY" \
-                "$domain" \
-                AAAA \
-                +short \
-                +time="$DNS_TIMEOUT" \
-                +tries=1 \
-                2>/dev/null
+            dig @"$DNS_PRIMARY" "$domain" AAAA +short \
+                +time="$DNS_TIMEOUT" +tries=1 2>/dev/null
         )
 
         if [ -n "$result" ]; then
             return 0
         fi
 
-
-        # Secondary DNS - A
+        # Secondary A
         result=$(
-            dig \
-                @"$DNS_SECONDARY" \
-                "$domain" \
-                A \
-                +short \
-                +time="$DNS_TIMEOUT" \
-                +tries=1 \
-                2>/dev/null
+            dig @"$DNS_SECONDARY" "$domain" A +short \
+                +time="$DNS_TIMEOUT" +tries=1 2>/dev/null
         )
 
         if [ -n "$result" ]; then
             return 0
         fi
 
-
-        # Secondary DNS - AAAA
+        # Secondary AAAA
         result=$(
-            dig \
-                @"$DNS_SECONDARY" \
-                "$domain" \
-                AAAA \
-                +short \
-                +time="$DNS_TIMEOUT" \
-                +tries=1 \
-                2>/dev/null
+            dig @"$DNS_SECONDARY" "$domain" AAAA +short \
+                +time="$DNS_TIMEOUT" +tries=1 2>/dev/null
         )
 
         if [ -n "$result" ]; then
             return 0
         fi
-
 
         return 1
     fi
 
-
-    # =========================================================
+    # ---------------------------------------------------------
     # Fallback: getent
-    # =========================================================
+    # ---------------------------------------------------------
 
     if command -v getent >/dev/null 2>&1; then
-
         if getent ahosts "$domain" >/dev/null 2>&1; then
             return 0
         fi
-
     fi
 
-
-    # =========================================================
+    # ---------------------------------------------------------
     # Fallback: host
-    # =========================================================
+    # ---------------------------------------------------------
 
     if command -v host >/dev/null 2>&1; then
-
         if host "$domain" >/dev/null 2>&1; then
             return 0
         fi
-
     fi
-
 
     return 1
 }
-
 
 # =============================================================
 # CHECK HTTP / HTTPS
@@ -269,10 +244,11 @@ check_http() {
     FINAL_URL=""
     PROTOCOL=""
 
-
-    # =========================================================
-    # HTTPS
-    # =========================================================
+    # ---------------------------------------------------------
+    # HTTPS first
+    # -k: certificate expiry is checked separately from cPanel
+    # -L: follow redirects
+    # ---------------------------------------------------------
 
     HTTP_RESULT=$(
         curl \
@@ -287,28 +263,21 @@ check_http() {
             2>/dev/null
     )
 
-
-    HTTP_CODE=$(echo "$HTTP_RESULT" | cut -d'|' -f1)
-    REMOTE_IP=$(echo "$HTTP_RESULT" | cut -d'|' -f2)
-    FINAL_URL=$(echo "$HTTP_RESULT" | cut -d'|' -f3)
-
+    HTTP_CODE="${HTTP_RESULT%%|*}"
+    REST="${HTTP_RESULT#*|}"
+    REMOTE_IP="${REST%%|*}"
+    FINAL_URL="${REST#*|}"
 
     case "$HTTP_CODE" in
-
         2*|3*|4*|5*)
-
             PROTOCOL="HTTPS"
-
             return 0
-
             ;;
-
     esac
 
-
-    # =========================================================
-    # HTTP FALLBACK
-    # =========================================================
+    # ---------------------------------------------------------
+    # HTTP fallback
+    # ---------------------------------------------------------
 
     HTTP_RESULT=$(
         curl \
@@ -322,34 +291,42 @@ check_http() {
             2>/dev/null
     )
 
-
-    HTTP_CODE=$(echo "$HTTP_RESULT" | cut -d'|' -f1)
-    REMOTE_IP=$(echo "$HTTP_RESULT" | cut -d'|' -f2)
-    FINAL_URL=$(echo "$HTTP_RESULT" | cut -d'|' -f3)
-
+    HTTP_CODE="${HTTP_RESULT%%|*}"
+    REST="${HTTP_RESULT#*|}"
+    REMOTE_IP="${REST%%|*}"
+    FINAL_URL="${REST#*|}"
 
     case "$HTTP_CODE" in
-
         2*|3*|4*|5*)
-
             PROTOCOL="HTTP"
-
             return 0
-
             ;;
-
     esac
-
 
     return 1
 }
-
 
 # =============================================================
 # START SCANNING
 # =============================================================
 
 echo -e "${BOLD}${CYAN}  ── SCANNING DOMAINS ──${NC}"
+echo ""
+
+# Hitung domain non-suspended untuk progress
+SCAN_TOTAL=0
+while IFS=': ' read -r scan_domain scan_user _; do
+    [ -z "$scan_domain" ] && continue
+    [ -z "$scan_user" ] && continue
+    [ "$scan_user" = "nobody" ] && continue
+    [[ "$scan_domain" == \#* ]] && continue
+    [ -f "$SUSPEND_DIR/$scan_user" ] && continue
+    SCAN_TOTAL=$((SCAN_TOTAL + 1))
+done < /etc/userdomains
+
+SCAN_INDEX=0
+
+echo -e "  ${DIM}Total domain yang diperiksa: ${SCAN_TOTAL}${NC}"
 echo ""
 
 
@@ -399,7 +376,11 @@ SUSP_$user"
 
 
     CNT_TOTAL=$((CNT_TOTAL + 1))
+    SCAN_INDEX=$((SCAN_INDEX + 1))
 
+    if [ "$SHOW_PROGRESS" -eq 1 ]; then
+        printf "  [%4d/%-4d] %-50s " "$SCAN_INDEX" "$SCAN_TOTAL" "$domain"
+    fi
 
     # =========================================================
     # DNS CHECK
@@ -413,6 +394,9 @@ SUSP_$user"
         DNS_DEAD_LIST="$DNS_DEAD_LIST
   ${RED}✗${NC} $(printf '%-50s' "$domain")  ${RED}DNS tidak resolve${NC}"
 
+        if [ "$SHOW_PROGRESS" -eq 1 ]; then
+            echo -e "${RED}DNS DEAD${NC}"
+        fi
 
         continue
 
@@ -432,6 +416,10 @@ SUSP_$user"
 
         WEB_STATUS="${GREEN}${PROTOCOL} ${HTTP_CODE}${NC}"
 
+        if [ "$SHOW_PROGRESS" -eq 1 ]; then
+            echo -e "${GREEN}DNS OK  ${PROTOCOL} ${HTTP_CODE}${NC}"
+        fi
+
     else
 
         CNT_HTTP_DEAD=$((CNT_HTTP_DEAD + 1))
@@ -442,6 +430,10 @@ SUSP_$user"
 
 
         WEB_STATUS="${YELLOW}WEB DOWN${NC}"
+
+        if [ "$SHOW_PROGRESS" -eq 1 ]; then
+            echo -e "${YELLOW}DNS OK  WEB DOWN${NC}"
+        fi
 
     fi
 
